@@ -28,7 +28,7 @@ function HomepageHeader() {
                     </Link>
                 </div>
                 <p>
-                    You can also subscribe to feeds of this weekly in {atom} or {rss}.
+                    You can also subscribe to feeds of this weekly report in {atom} or {rss}.
                 </p>
             </div>
         </header>
