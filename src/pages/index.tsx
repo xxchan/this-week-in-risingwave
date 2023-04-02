@@ -17,7 +17,7 @@ function HomepageHeader() {
             <div className="container" style={{width: '52rem'}}>
                 <h1 className="hero__title">Welcome</h1>
                 <p>
-                    This is the home of This Week in RisingWave, brining you news about the development of {rw}, a distributed SQL database for stream processing, and its open and inclusive community.
+                    {rw} is a distributed SQL database for stream processing written in Rust. As an open-source project, we want to keep everyone informed of the latest project updates, even if they are still experimental before being officially released. We sincerely want to share our excitement with you as we make progress on this project. That's why we decided to write this weekly report. We hope you enjoy it!
                 </p>
                 <p>
                     Click the "Browsing Issues" button below to see the most recent weekly issues.

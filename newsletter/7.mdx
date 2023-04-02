@@ -5,3 +5,131 @@ authors: [xxchan, dylan, runji]
 
 # This Week in RisingWave #7
 
+## Feature Updates 🌟
+
+### `psql` completion and system table
+
+- [fix: run complex query containing system tables in local mode by xxchan #8797](https://github.com/risingwavelabs/risingwave/pull/8797)
+- [fix(batch): fix sys table queries run in local mode by chenzl25 #8840](https://github.com/risingwavelabs/risingwave/pull/8840)
+- [feat: support psql tab-completion for relation names by xxchan #8839](https://github.com/risingwavelabs/risingwave/pull/8839)
+
+Do you know `psql` can autocomplete by hitting the Tab key? I didn’t know that until recently. This can be extremely useful for RisingWave, whose most important usage is `CREATE MATERIALIZED VIEW`, which is tiring and error-prone to type manually 😇. (TBH, I made numerous numerous for that 😭)
+
+I hitted Tab frequently after knowing that feature. This time, I meet an interesting bug with that. After entering `SHOW` and hitting Tab, RisingWave panics! 🤯 It turned out that `psql` will send some (complex) query on system tables for some auto-completion. As I mentioned before in [Issue #1](https://xxchan.me/this-week-in-risingwave/2023/02/17/twirw-1.html#pg_catalog), system tables are tricky. RisingWave treats them differently, and requires that they must be scanned in local mode (I also talked about local-mode in [Issue #4](https://xxchan.github.io/this-week-in-risingwave/2023/03/10/twirw-4.html#auto-execution-mode-selection)). However, the logic for checking system tables are incomplete, and we didn’t find it because such complex queries on system tables are rarely used.
+
+After fixing that bug, I further played with `psql` auto-completion and implemented the support for completing relation names.
+
+See the demo below for all the things I mentioned above:
+
+![psql-completion](/img/7/completion.gif)
+
+Isn't it lovely? 😎
+
+### Band join
+
+> This feature is related to watermarks, an advanced concept in stream processing that is still under development at RisingWave. Initially, we chose not to include this feature to make stream processing more user-friendly. Additionally, unlike stream processing systems, watermark is not necessary in most cases for a streaming database like RisingWave which owns the final results. However, as RisingWave continues to mature, we aim to support it for advanced use cases.
+
+
+[feat(join): leverage band conditions in hash join by soundOfDestiny #8749](https://github.com/risingwavelabs/risingwave/pull/8749)
+
+Band join, also known as interval join in stream processing, is now supported. This powerful feature allows for joining of two inputs with watermark columns within a specified time interval. Plus, it automatically cleans the join states for both sides by safely removing unnecessary records.
+
+Let's take a look at a simple example. Initially, we define two tables with watermark columns `ts1` and `ts2`. Subsequently, these two tables are joined based on their corresponding ids i.e. `id1 = id2`. Finally, a band condition is added to this join operation which states that `ts1` should fall between `(ts2 - INTERVAL '30' SECOND)` and `(ts2 + INTERVAL '30' SECOND)`. In this way, RisingWave will transform this join into a `StreamIntervalJoin`.
+
+```sql
+CREATE TABLE t1 (
+    ts1 TIMESTAMP WITH TIME ZONE, 
+    id1 INT, 
+    watermark FOR ts1 AS ts1 - INTERVAL '5' SECOND
+) APPEND ONLY;
+
+CREATE TABLE t2 (
+    ts2 TIMESTAMP WITH TIME ZONE, 
+    id2 INT, 
+    watermark FOR ts2 AS ts2 - INTERVAL '5' SECOND
+) APPEND ONLY;
+
+CREATE MATERIALIZED VIEW join_mv AS 
+    SELECT * 
+    FROM t1 
+    LEFT JOIN t2 ON id1 = id2 
+    AND ts1 BETWEEN (ts2 - INTERVAL '30' SECOND) AND (ts2 + INTERVAL '30' SECOND);
+```
+
+### More integrations (and tests)
+
+- [feat(connector): support hudi sink by wenym1 #8824](https://github.com/risingwavelabs/risingwave/pull/8824)
+- [test: add integration test of tidb/ticdc by fuyufjh #8708](https://github.com/risingwavelabs/risingwave/pull/8708#event-8822990102)
+- [test: add astra-streaming source test and streamnative-cloud source test by Honeta #8807](https://github.com/risingwavelabs/risingwave/pull/8807)
+
+We keep adding more and more data ingestion and delivery options, and improving their stability. Feel free to try them out or tell us any other integrations you want to use RisingWave with!
+
+
+## Rusty stuff 🦀️
+
+> [We ❤️ Rust!](https://www.risingwave-labs.com/blog/building-a-cloud-database-from-scratch-why-we-moved-from-cpp-to-rust/) This section is about some general Rust related issues.
+> 
+
+### Build functions more easily with procedural macros
+
+This week we made significant refactoring to the expression framework, significantly improving the developer experience. 🤩
+
+[refactor(expr): generate build-from-prost with procedural macros by wangrunji0408 #8499](https://github.com/risingwavelabs/risingwave/pull/8499)
+
+We implemented a procedural macro to annotate function signatures. Now, developers can easily define a function in a few lines:
+
+```rust
+#[function("add(int32, int32) -> int32")]
+fn add_i32(x: i32, y: i32) -> i32 {
+    x + y
+}
+```
+
+This macro automatically generates code for building expressions from `prost` structs. It also automatically registers the function to a global registry at startup, so that the frontend can correctly check and infer types. Additionally, this macro supports expanding multiple types and generates the optimal implementation based on the Rust function signature (e.g., infallible functions with primitive types can be accelerated using SIMD). This hides the tedious details behind an elegant interface.
+
+Once everything becomes simple enough, more developers can easily add new functions to RisingWave, including ChatGPT! We conducted a bold experiment and made ChatGPT generate code for functions based on Postgres documentation… 
+
+
+![1.png](/img/7/1.png)
+
+![2.png](/img/7/2.png)
+
+and it worked! In this [PR](https://github.com/risingwavelabs/risingwave/pull/8767), we added many string functions to RisingWave in just a few minutes. With the help of AI, RisingWave will evolve faster in the future!
+
+In addition, we designed a simple DSL to quickly construct expressions in unit tests. Developers no longer need to manually construct complex **`prost`** structs!
+
+[feat(expr): build expression from pretty string by wangrunji0408 #8774](https://github.com/risingwavelabs/risingwave/pull/8774)
+
+For example:
+
+```rust
+# Before
+build(
+    PbType::LessThan,
+    DataType::Boolean,
+    vec![
+        InputRefExpression::new(DataType::Float32, 1).boxed(),
+        InputRefExpression::new(DataType::Float64, 3).boxed(),
+    ],
+)
+.unwrap()
+
+# After -- much simpler!
+build_from_pretty("(less_than:boolean $1:float4 $3:float8)")
+```
+
+## New Contributor
+
+[fix(binder): Incorrect cast when specifying columns by broccoliSpicy #8770](https://github.com/risingwavelabs/risingwave/pull/8770)
+
+This is the third PR contributed by @broccoliSpicy!
+
+[implement system administration functions that get the size of table, index, and MV · Issue #7766](https://github.com/risingwavelabs/risingwave/issues/7766)
+
+Two new contributors to RisingWave, @broccoliSpicy and @erichgess, are currently discussing a solution to an issue. It's great to witness their passion and enthusiasm for the community as it continues to thrive. Keep up the excellent work!
+
+---
+
+Finally, welcome to join the RisingWave [Slack community](https://join.slack.com/t/risingwave-community/shared_invite/zt-120rft0mr-d8uGk3d~NZiZAQWPnElOfw). Also check out the [good first issue](https://github.com/risingwavelabs/risingwave/issues?q=is%3Aopen+label%3A%22good+first+issue%22+sort%3Aupdated-desc) and [help wanted](https://github.com/risingwavelabs/risingwave/issues?q=is%3Aopen+sort%3Aupdated-desc+label%3A%22help+wanted%22) issues if you want to join the development of an open source database system!
+
+So much for this week. See you next week! 🤗
