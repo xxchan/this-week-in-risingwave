@@ -1,0 +1,36 @@
+/**
+ * Any CSS included here will be global. The classic template
+ * bundles Infima by default. Infima is a CSS framework designed to
+ * work well for content-centric websites.
+ */
+
+:root {
+  --ifm-color-primary: #3071a9;
+  --ifm-code-font-size: 95%;
+  --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.1);
+}
+
+[data-theme='dark'] .docusaurus-highlight-code-line {
+  background-color: rgba(0, 0, 0, 0.3);
+}
+
+.navbar-item {
+  font-family: 'Noto Sans', 'sans-serif', 'Arial';
+}
+
+.featureSvg {
+  height: 200px;
+  width: 200px;
+}
+
+html.plugin-blog h2,
+html.plugin-blog.blog-post-page h1 {
+    font-size: 2rem;
+}
+
+@media (max-width: 576px) {
+  html.plugin-blog h2,
+  html.plugin-blog.blog-post-page h1 {
+      font-size: 1.5rem;
+  }
+}
