@@ -1,0 +1,103 @@
+---
+date: 2023-04-09
+authors: [xxchan, tao, yuhao, yuanxin]
+---
+
+# This Week in RisingWave #8
+
+This week, we celebrated RisingWave's v0.18.0 release and it's first birthday! We talked about (many) new functions, system functions, generated columns, the dedup operator, and more.
+
+![birthday.png](/img/8/birthday.png)
+
+<!--truncate-->
+
+## RisingWave’s v0.18.0 release & first birthday 🎉🎉🎉
+
+I'm excited to let you know that RisingWave 0.18.0 has been released this week! And it's even more special because it's also [the 1st birthday of RisingWave](https://twitter.com/YingjunWu/status/1644795806309036033)!
+
+In this new version, we've added several critical features like UDF support, the JSONB type, and a bunch of new SQL functions. Check out the release note to see what's new: [Release v0.18.0](https://github.com/risingwavelabs/risingwave/releases/tag/v0.18.0)
+
+
+## Features Updates 🌟
+
+### (Many!) new functions
+
+- math: trigonometric (e.g. `sin`), hyperbolic (e.g. `sinh`), @ (`abs`), `ceiling`
+    - [feat(frontend): Trigonometric functions in degrees by CAJan93 #8884](https://github.com/risingwavelabs/risingwave/pull/8884)
+    - [feat(frontend): Hyperbolic trigonometric functions by CAJan93 #8918](https://github.com/risingwavelabs/risingwave/pull/8918)
+    - [feat(binder): support some alternate names for existing exprs by xiangjinwu #8998](https://github.com/risingwavelabs/risingwave/pull/8998)
+- string: `position`, `strpos`, `trim`, `btrim`, `translate`
+    - [fix(expr): align `position` syntax and `strpos` semantic with SQL standard by xiangjinwu #9000](https://github.com/risingwavelabs/risingwave/pull/9000)
+    - [fix(sqlparser): support more PostgreSQL `trim` syntax by xiangjinwu #8985](https://github.com/risingwavelabs/risingwave/pull/8985)
+- date/time: `extract` and `date_part`
+    - [feat: support `date_part` function and more fields for `extract` by wangrunji0408 #8830](https://github.com/risingwavelabs/risingwave/pull/8830)
+- array: `cardinality`
+    - [feat: Add support for cardinality function by Honeta #8867](https://github.com/risingwavelabs/risingwave/pull/8867)
+
+This week, we added several new functions to catch up with the feature set of mainstream SQL databases. The expanded SQL functionality allows users to easily migrate their Postgres queries to RisingWave.
+
+This had been made easier due to to [last week’s refactoring of the expression framework](https://this-week-in-risingwave.vercel.app/newsletter/7#build-functions-more-easily-with-procedural-macros). It indeed significantly increased productivity and also generated interest among people to contribute by adding more functions. This is a great opportunity to start contributing to RisingWave. We welcome you to join forces with us!
+
+### Generated columns
+
+- [feat: introduce generated columns by yuhao-su #8700](https://github.com/risingwavelabs/risingwave/pull/8700)
+- [feat(generated_columns): support select generated columns from source by yuhao-su #8841](https://github.com/risingwavelabs/risingwave/pull/8841#event-8896744929)
+
+A new mind-blowing SQL feature! 🤯😆
+
+A generated column is a computed column that is not inserted manually. This feature allows users to create columns that are calculated based on other existing columns or generate new ones independently (one important use case to support this feature is `proc_time()`).
+
+Here’s an example:
+
+```sql
+CREATE TABLE t1(v1 int, v2 int as v1+1);
+```
+
+PostgreSQL has two types of generated columns: `STORE` and `VIRTUAL`. In RisingWave, generated columns on `TABLE` and `SOURCE` correspond to these two types respectively. (Learn more about RisingWave’s `TABLE` and `SOURCE` [here](https://www.risingwave.dev/docs/current/sql-create-table/))
+
+When users create a `TABLE` with generated columns, all generated values are stored; When users create a `SOURCE` with generated columns, the generated values are not stored. Instead, a `Project` is created when the source is queried.
+
+### Dedup operator
+
+- [feat(streaming): introduce dedup cache and append-only dedup executor by xx01cyx #8874](https://github.com/risingwavelabs/risingwave/pull/8874)
+- [feat(frontend): use dedup operator for `DISTINCT ON` by xx01cyx #9016](https://github.com/risingwavelabs/risingwave/pull/9016)
+
+Previously, we plan Dedup (i.e., `DISTINCT ON` SQL queries) to something like a GroupTopN with limit 1. While this approach is generally acceptable, there is room for improvement. For example, an append-only is a very important attribute in streaming context. An append-only stream can be much cheaper than a updatable stream. A GroupTopN stream is (unfortunately) undateable — the largest/smallest items need to be updated when new data arrives. However, deduplicating elements (by selecting the first arrived element) is actually append-only!
+
+Therefore, we introduced a new database operator — dedup operator, to optimize `DISTINCT ON` SQL queries. The dedup operator maintains the stream’s append-only attribute, enabling watermark and better downstream performance.
+
+
+### Table size system functions
+
+- [implement system administration functions that get the size of table, index, and MV · Issue #7766](https://github.com/risingwavelabs/risingwave/issues/7766)
+- [Size of Objects (pg_table_size, pg_relation_size, pg_indexes_size) by erichgess #9013](https://github.com/risingwavelabs/risingwave/pull/9013)
+
+Currently we have a Grafana dashboard that shows the size of MVs, but in some cases, it might be more user-friendly to expose these functionalities as SQL functions. [@erichgess](https://github.com/erichgess), one of our new and very active contributors, is working on this feature.
+
+Despite my repeated mentions in previous newsletters, system tables and functions remain challenging. And we encountered a new difficulty related with this feature. As a distributed database, RisingWave’s meta node manages many important information about the system (i.e., the system catalog), and the frontend node subscribes to it for the changes of the system catalog. However, compute nodes and specifically the expression framework lack access to this system catalog. Typically, support for system functions involves querying the system catalog directly in frontend's binder and "inline" the results. Unfortunately, some complex queries must be performed within the expression framework itself which is currently not possible.
+
+
+## Reliability Improvements 🚀
+
+### Sink validation
+
+[feat(sink): reject invalid options when creating sink by xx01cyx #8757](https://github.com/risingwavelabs/risingwave/pull/8757)
+
+We will implement a more rigorous validation process for user input when creating a sink. Any invalid options will be rejected instead of being ignored, and users will receive a clear error message indicating the reason for rejection.
+
+## New contributors
+
+We have two new first-time contributors [@gengteng](https://github.com/gengteng) and [@lyang24](https://github.com/lyang24) this week:
+
+- [fix: Better error message for CREATE SOURCE without connector by gengteng #8869](https://github.com/risingwavelabs/risingwave/pull/8869)
+- [feat(frontend): support for sqrt function by lyang24 #9017](https://github.com/risingwavelabs/risingwave/pull/9017)
+
+In the meantime, after his 2nd PR from last week, [@broccoliSpicy](https://github.com/broccoliSpicy) submitted his 3rd PR: [fix(binder): Incorrect cast when specifying columns by broccoliSpicy #8770](https://github.com/risingwavelabs/risingwave/pull/8770). 
+
+Have a good time hacking RisingWave while deepening your understanding of the Streaming SQL domain throughout the process!
+
+---
+
+Finally, welcome to join the RisingWave [Slack community](https://join.slack.com/t/risingwave-community/shared_invite/zt-120rft0mr-d8uGk3d~NZiZAQWPnElOfw). Also check out the [good first issue](https://github.com/risingwavelabs/risingwave/issues?q=is%3Aopen+label%3A%22good+first+issue%22+sort%3Aupdated-desc) and [help wanted](https://github.com/risingwavelabs/risingwave/issues?q=is%3Aopen+sort%3Aupdated-desc+label%3A%22help+wanted%22) issues if you want to join the development of an open source database system!
+
+So much for this week. See you next week! 🤗
