@@ -12,9 +12,9 @@ function GiscusComponent() {
   return (
     <Giscus
       repo="xxchan/this-week-in-risingwave"
-      repoId="idOfCreatedRepo"
+      repoId="R_kgDOJRrTVA"
       category="General"
-      categoryId="General"  // E.g. id of "General"
+      categoryId="DIC_kwDOJRrTVM4CVp_p"  // E.g. id of "General"
       mapping="url"                        // Important! To map comments to URL
       term="Welcome to @giscus/react component!"
       strict="0"
