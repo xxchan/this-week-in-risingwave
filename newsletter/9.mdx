@@ -1,0 +1,162 @@
+---
+date: 2023-04-15
+authors: [xxchan, tao, dylan, bugen, strikew]
+enableComments: true 
+---
+
+# This Week in RisingWave #9
+
+This week, we have a lot of updates! 😆
+
+To name a few: functional index, `proc_time()`, `int256`, `CREATE CONNECTION`, and ... the beta release of RisingWave Cloud!
+
+<!--truncate-->
+
+## RisingWave Cloud Beta release 🚀
+
+[Announcing RisingWave Cloud Beta Release](https://www.risingwave.com/blog/announcing-risingwave-cloud-beta-release/)
+
+Just one year after we open-sourced RisingWave Database, we're pleased to announce another amazing achievement: the beta release of RisingWave Cloud, a hosted service that provides out-of-the-box RisingWave services. 🫡
+
+To celebrate it, we have a featured event next week:
+
+[Rising *RisingWave*: A Look Back at the Journey to Build Distributed SQL Streaming Database](https://www.risingwave.com/event/streaming-stories-5/)
+
+Don't miss the chance to learn how we got started and where we are now!
+
+## Features Updates 🌟
+
+### Functional Index
+
+[feat(frontend): support functional indexes creation by chenzl25 #8976](https://github.com/risingwavelabs/risingwave/pull/8976)
+
+A functional index allows you to index the results of a function or expression, instead of just the raw data in a table. One interesting use case for functional indexes is indexing a field of a json type column.
+
+Here is an example of how we use functional indexes.
+
+```sql
+-- Create a table with a jsonb column and insert some data.
+create table t (j jsonb);
+INSERT INTO t VALUES ('{"k": "abc"}');
+
+-- Create a functional index.
+create index idx on t(j->>'k');
+
+-- Run a query on the functional index. The optimizer will
+-- automatically choose the correct index to retrieve data
+-- for your query.
+select * from t where j->>'k' = 'abc';
+```
+
+Take a look at the query plan by using a explain statement. We can see that the query will access the index only. The predicate `j->>'k' = 'abc'` in the query is recognized by the optimizer when it does an optimization called index selection where the optimizer will try to replace an original plan accessing table `t` with a more efficient plan accessing the index `idx`.
+
+```sql
+explain select * from t where j->>'k' = 'abc';
+                                       QUERY PLAN
+-----------------------------------------------------------------------------------------
+ BatchExchange { order: [], dist: Single }
+ └─BatchScan { table: idx, columns: [j], scan_ranges: [JSONB_ACCESS_STR = Utf8("abc")] }
+```
+
+### `proc_time()`
+
+[feat: introduce proc_time() by yuhao-su #9088](https://github.com/risingwavelabs/risingwave/pull/9088)
+
+Time is a critical concept in stream processing. However, it can sometimes be difficult to understand. You may have heard terms like "event time" and "processing time". As we work on [advanced features of stream processing like watermark](https://this-week-in-risingwave.vercel.app/newsletter/7#band-join), We are adding processing time support (which is the time a record is processed in RisingWave) to enable features such as temporal joins (see RFC [here](https://github.com/risingwavelabs/rfcs/blob/main/rfcs/0049-temporal-join.md)). But don't worry, you don’t have to understand the subtle differences of time in most cases. As a streaming database, RisingWave can make things easier for you!
+
+### Int256
+
+- [feat(common): implement logical type for int256 by shanicky #9028](https://github.com/risingwavelabs/risingwave/pull/9028)
+- [feat: impl hex_to_int256 by shanicky #9146](https://github.com/risingwavelabs/risingwave/pull/9146)
+- [feat(common): impl division of `Int256` and `double precision` by shanicky #9169](https://github.com/risingwavelabs/risingwave/pull/9169#event-8997516699)
+
+We are adding an experimental feature: an `int256` datatype. 
+
+PostgreSQL supports 16, 32, and 64-bit integers. Some users have requested the addition of 256-bit integers, as they are a fundamental type in the blockchain world. 
+
+Fun fact 1: PostgreSQL calls 16/32/64-bit integers `int2/4/8`, so if we use the same convention, 256-bit integer will be called as `int64`, which is obviously confusing 🤣.
+
+Fun fact 2: An alternative for `int256` is an arbitrary-precision decimal type, but it’s slow and almost no modern databases support it.
+
+### `CREATE CONNECTION` **-** Private Link
+
+[feat(source): Use a private link connection to create Kafka source by StrikeW #9119](https://github.com/risingwavelabs/risingwave/pull/9119#pullrequestreview-1382526344)
+
+Users in a cloud environment may have already set up an AWS MSK (cloud-hosted Kafka) service. However, they may encounter problems to connect to the MSK brokers when creating a source in RisingWave. This is because the user's MSK service is usually located in a different VPC than the RisingWave instance in the cloud, and the MSK will broadcast to its clients the internal IP addresses of brokers, which is unreachable from other VPCs.
+
+To solve this issue, we leverage the [AWS PrivateLink](https://docs.aws.amazon.com/vpc/latest/privatelink/privatelink-share-your-services.html) networking to establish a connection from RisingWave’s VPC to the user's VPC. Firstly, users need to set up an endpoint service to expose the MSK service. Then RisingWave will create an endpoint to access the exposed service.
+
+We have introduced a new SQL command `CREATE CONNECTION` for this purpose. It creates a `Connection` database object, which can represent a PrivateLink connection in the cloud. With this connection, users can create a Kafka source to consume messages in an AWS MSK service.
+
+## Performance Optimizations 💪
+
+### Switching the hash algorithm for the in-memory cache
+
+[fix(streaming): use xxhash64 for hash key in cache by BugenZhao #9163](https://github.com/risingwavelabs/risingwave/pull/9163#issuecomment-1506785975)
+
+As a distributed streaming database, RisingWave dispatches data with consistent hashing to achieve parallel execution. In short, to decide which partition a record will be dispatched to, we first calculate the hash value by some columns (the “distribution key”) with CRC32, then take the least significant bits as the index to look up the scheduling mapping.
+
+Here comes the problem: we also accidentally use the same hash algorithm for the in-memory cache of executors 😰. Since the records dispatched into the same partition already have some locality of their hash values, using the same algorithm for the intra-partition cache can lead to abnormal hash collisions, then a heavy `K::Eq` span in the flame graph. By replacing the cache’s algorithm and then making them orthogonal, we achieve a performance increase of ~20%.
+
+## Rusty stuff 🦀️
+
+> [We ❤️ Rust!](https://www.risingwave-labs.com/blog/building-a-cloud-database-from-scratch-why-we-moved-from-cpp-to-rust/) This section is about some general Rust related issues.
+> 
+
+### Handle unrecognized fields in `serde`
+
+[refactor(config): check unrecognized fields during deserialization by BugenZhao #9156](https://github.com/risingwavelabs/risingwave/pull/9156#issuecomment-1506821854)
+
+Do you know this common tip for tolerating and recording unrecognized fields when deserializing with `serde` in Rust? Here it is:
+
+```rust
+struct Foo {
+	...
+
+	#[serde(default, flatten)]
+	pub unrecognized: HashMap<String, serde_json::Value>,
+}
+```
+
+Since almost all structures can be parsed into a JSON object, all unrecognized fields can be automagically put into this flattened map 😄. Furthermore, if we want to customize the behavior for encountering an unrecognized field, we can also wrap the `HashMap` into a struct `Unrecognized` and put the logic in `impl Deserialize`. For example, we print a warning for each unrecognized field in this PR.
+
+### **`cargo audit`**
+
+[fix: fix cargo audit issues and add audit to ci by xxchan #8959](https://github.com/risingwavelabs/risingwave/pull/8959)
+
+As RisingWave gets mature, we care a lot about things like stability and security. One RisingWave Slack community member [reported](https://risingwave-community.slack.com/archives/C03AJP01QVC/p1680303180145629) that there’s a `cargo audit` security alert ⚠️:
+
+```sql
+Crate:     time
+Version:   0.1.45
+Title:     Potential segfault in the time crate
+Date:      2020-11-18
+ID:        RUSTSEC-2020-0071
+URL:       https://rustsec.org/advisories/RUSTSEC-2020-0071
+Severity:  6.2 (medium)
+Solution:  Upgrade to >=0.2.23
+Dependency tree:
+time 0.1.45
+└── chrono 0.4.24
+```
+
+This alert is actually quite commonly seen in many Rust projects. After some investigation, I confirmed that it's a false positive: `chrono` doesn't use the vulnerable functions, so it's not affected by `RUSTSEC-2020-0071`. Interestingly, `chrono` did have a similar issue (`RUSTSEC-2020-0159`), but it was already patched in version 0.4.20 by rewriting the vulnerable C function in Rust (see [a detailed writeup here](https://github.com/time-rs/time/issues/293#issuecomment-946382614)).
+
+P.S. The false positive problem of advisory-db is an unsolved problem. See [https://github.com/rustsec/advisory-db/issues/288#issuecomment-1229186835](https://github.com/rustsec/advisory-db/issues/288#issuecomment-1229186835)
+
+## New contributors
+
+[@GengTeng](https://github.com/gengteng) submitted his 2nd PR:
+
+- [feat(expr): implement degrees and radians by gengteng #9108](https://github.com/risingwavelabs/risingwave/pull/9108)
+
+After his 3rd PR last week, [@broccoliSpicy](https://github.com/broccoliSpicy) continues to actively participate in high-quality discussions 🫶. Starting from a small issue and then diving deeper into related ones is quite a good way to get involved in a large project!
+
+- [More bugs when binding `insert` with unaligned source schema · Issue #9036](https://github.com/risingwavelabs/risingwave/issues/9036)
+- [`returning` fails matching specified target columns · Issue #9012](https://github.com/risingwavelabs/risingwave/issues/9012)
+
+---
+
+Finally, welcome to join the RisingWave [Slack community](https://join.slack.com/t/risingwave-community/shared_invite/zt-120rft0mr-d8uGk3d~NZiZAQWPnElOfw). Also check out the [good first issue](https://github.com/risingwavelabs/risingwave/contribute) and [help wanted](https://github.com/risingwavelabs/risingwave/issues?q=is%3Aopen+sort%3Aupdated-desc+label%3A%22help+wanted%22) issues if you want to join the development of an open source database system!
+
+So much for this week. See you next week! 🤗
