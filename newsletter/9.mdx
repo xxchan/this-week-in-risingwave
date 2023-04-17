@@ -72,7 +72,7 @@ We are adding an experimental feature: an `int256` datatype.
 
 PostgreSQL supports 16, 32, and 64-bit integers. Some users have requested the addition of 256-bit integers, as they are a fundamental type in the blockchain world. 
 
-Fun fact 1: PostgreSQL calls 16/32/64-bit integers `int2/4/8`, so if we use the same convention, 256-bit integer will be called as `int64`, which is obviously confusing 🤣.
+Fun fact 1: PostgreSQL calls 16/32/64-bit integers `int2/4/8` (the number of bytes), so if we use the same convention, 256-bit integer will be called as `int32`, which is obviously confusing 🤣.
 
 Fun fact 2: An alternative for `int256` is an arbitrary-precision decimal type, but it’s slow and almost no modern databases support it.
 
