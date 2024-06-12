@@ -1,0 +1,149 @@
+---
+date: 2023-03-18
+authors: [xxchan]
+enableComments: true
+---
+
+> This blog series is *my personal comments* about (part of) the development of [RisingWave](https://github.com/risingwavelabs/risingwave).
+>
+> Please take it as an unofficial and no-promise supplement.
+
+## Notable changes 🌟
+
+### Temporal join
+
+- [Tracking: Process time temporal join · Issue #8123](https://github.com/risingwavelabs/risingwave/issues/8123)
+- [RFC: Temporal Join by chenzl25 #49 · risingwavelabs/rfcs](https://github.com/risingwavelabs/rfcs/pull/49/files)
+
+Lots of production scenarios contain a fact table and several dimension tables, where users want to enrich (join) their fact table with dimension tables. Different from regular stream joins, under the enrichment scenario users may want to keep the previous join outputs unaffected when the dimension table is updated. This is because we only want to *enrich* the fact table without *duplicated* outputs.
+
+Temporal join is for this scenario. More technically speaking, it joins an append-only stream (such as Kafka) with a temporal table (aka versioned table, e.g. backed by MySQL CDC). The stream side lookups the temporal table, which means the join is driven by the stream side only.
+
+The syntax is like:
+
+```sql
+SELECT * FROM stream LEFT JOIN versioned FOR SYSTEM_TIME AS OF NOW() ON stream.col = versioned.id
+```
+
+
+## Interesting SQL features 😄
+
+> I don't know that much about SQL before I becoming a database developer. Every now and then I got some new surprise from SQL...
+
+### Server local timezone
+
+Do you know SQL standard has two timestamp types: `timestamp with/without time zone`?
+
+[Support `SET TIME ZONE LOCAL` syntax · Issue #8551](https://github.com/risingwavelabs/risingwave/issues/8551)
+
+The new syntax allows us to set the server's local timezone, which is useful for local testing.
+
+```sql
+dev=> select now();
+              now              
+-------------------------------
+ 2023-03-16 10:41:10.951+00:00
+(1 row)
+
+dev=> set time zone local;
+SET_VARIABLE
+dev=> select now();
+              now              
+-------------------------------
+ 2023-03-16 11:41:36.958+01:00
+(1 row)
+```
+
+BTW, this is done via [strawlab/iana-time-zone: Rust crate to get the IANA time zone for the current system](https://github.com/strawlab/iana-time-zone).
+
+## Intersting Bug
+
+### Inverse of column index mapping
+
+[fix(optimizer): fix hash join distribution by chenzl25 #8598](https://github.com/risingwavelabs/risingwave/pull/8598)
+
+I talked about `ColIndexMapping` in [This Week in RisingWave #3](https://xxchan.github.io/this-week-in-risingwave/2023/03/04/twirw-3.html#injectivity-of-column-index-mapping).
+
+> Althought mathematically simple and intuitive, it’s not easy to do such mappings correctly in programs.
+
+Well, then we met another bug related to `ColIndexMapping` this week 🥲. (Luckily, it's not very easy to trigger it.) This time, it's about the inverse of the mapping. Shortly speaking, suppose we have an array of index pairs `[(l1, r1), (l2, r2), ...]`, naturally we can build two mappings `l -> r` and `r -> l`. However, the inverse of `l -> r` is not `r -> l`! Can you tell why?
+
+
+## Reliability Improvements 💪
+
+### The Great MadSim!
+
+[fix: avoid panic when upstream input is closed for lookup #8529](https://github.com/risingwavelabs/risingwave/pull/8529)
+
+This week, we identified a new bug through [MadSim](https://github.com/madsim-rs/madsim) that deterministically shuts down and restarts nodes in a RisingWave cluster. This time, the bug was found during the execution path of the lookup executor. Thanks to MadSim, we were able to quickly identify the issue and resolve it.
+
+### Interval bugfixes and tests
+
+- [fix(common): interval overflow panic / wrap during comparison and justify #8556](https://github.com/risingwavelabs/risingwave/pull/8556)
+- [fix(common): interval should have microsecond precision #8501](https://github.com/risingwavelabs/risingwave/pull/8501)
+- [test(regress): enable interval #8438](https://github.com/risingwavelabs/risingwave/pull/8438)
+
+Intervals are a fundamental data type for a streaming SQL database, but they can also be sophisticated in some ways. Recently, RisingWave has enhanced its support for intervals and migrated many related tests from Postgres.
+
+### OpenDAL
+
+[feat(test): add e2e test for OpenDAL fs backend #8528](https://github.com/risingwavelabs/risingwave/pull/8528)
+
+Since February, RisingWave has been using [OpenDAL](https://github.com/apache/incubator-opendal) as one of its underlying object storage implementations. OpenDAL greatly reduces our efforts in supporting various cloud storage systems, especially HDFS. This PR uses opendal fs engine to mock memory objects store.
+
+By the way, OpenDAL is now an Apache Incubator project! 🎉
+
+## Rusty stuff 🦀️
+
+> [We ❤️ Rust!](https://www.risingwave-labs.com/blog/building-a-cloud-database-from-scratch-why-we-moved-from-cpp-to-rust/) This section is about some general Rust related issues.
+
+
+### Be more careful about error creation!
+
+[fix(expr): do not construct error for extracting time subfield by BugenZhao #8538](https://github.com/risingwavelabs/risingwave/pull/8538)
+
+Error creation can be very expensive!
+
+In [This Week in RisingWave #1](https://xxchan.github.io/this-week-in-risingwave/2023/02/17/twirw-1.html#-clippyor_fun_call-), I mentioned we can use `ok_or_else` to create expensive error lazily. This time the errors are not actually needed. `Option` is enough. Basically, I mean cases like this:
+
+```rust
+// Don't do this!
+fn inner() -> Result<T> {}
+fn outer() -> Result<T> {
+    match inner() {
+        Ok(t) => Ok(t),
+        Err(_) => { 
+          // try a different computation
+          ...
+        },
+    }
+}
+```
+
+My takeaway is: Think more about the definition of error types and try to keep it small. If it's unavoidably large, then we have to think more when we use it.
+
+BTW, kudos to [@BugenZhao](https://github.com/bugenzhao) for catching this issue (again)!
+
+P.S., this PR brings us 1000%+ throughput improvement (🤯) on nexmark q14, which is a simple `SELECT` with `extract(hour from date_time)`.
+
+## New Contributors
+
+[Support optional parameter offset in tumble and hop by Eridanus117 #8490](https://github.com/risingwavelabs/risingwave/pull/8490)
+
+This is the second PR by [@Eridanus117](https://github.com/Eridanus117). 
+
+[feat(expr): support builtin function pi. by broccoliSpicy #8509](https://github.com/risingwavelabs/risingwave/pull/8509)
+
+This is the second PR by [@broccoliSpicy](https://github.com/broccoliSpicy).
+
+It's great to see new contributors joining in, and even better when they show interest in diving deeper and contributing continuously! 🥰
+
+[CREATE SINK panic · Issue #8482](https://github.com/risingwavelabs/risingwave/issues/8482)
+
+I remember [@JuchangGit](https://github.com/JuchangGit) had submitted 2 issues in the past. This week he submits another one. I'd like to mention this because open source contribution is not only about code (PRs). Playing with the software and reporting issues are also very important contributions!
+
+---
+
+Finally, welcome to join the RisingWave [Slack community](https://join.slack.com/t/risingwave-community/shared_invite/zt-120rft0mr-d8uGk3d~NZiZAQWPnElOfw). Also check out the [good first issue](https://github.com/risingwavelabs/risingwave/issues?q=is%3Aopen+label%3A%22good+first+issue%22+sort%3Aupdated-desc) and [help wanted](https://github.com/risingwavelabs/risingwave/issues?q=is%3Aopen+sort%3Aupdated-desc+label%3A%22help+wanted%22) issues if you want to join the development of an open source database system!
+
+So much for this week. See you next week (hopefully)! 🤗

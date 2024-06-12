@@ -1,0 +1,105 @@
+---
+date: 2023-03-25
+authors: [xxchan]
+enableComments: true
+---
+
+> This blog series is *my personal comments* about (part of) the development of [RisingWave](https://github.com/risingwavelabs/risingwave).
+>
+> Please take it as an unofficial and no-promise supplement.
+
+## Features Updates 🌟
+
+### `NULLS {FIRST | LAST}`
+
+[feat(common): support `NULLS {FIRST | LAST}` by richardchien · Pull Request #8485](https://github.com/risingwavelabs/risingwave/pull/8485)
+
+`NULL` s can be very tricky in SQL. Do you known you can specify its ordering?
+
+```sql
+> select * from t order by x /* nulls last */; 
++--------+
+| x      |
+|--------|
+| 1      |
+| 2      |
+| <null> |
++--------+
+
+> select * from t order by x nulls first;
++--------+
+| x      |
+|--------|
+| <null> |
+| 1      |
+| 2      |
++--------+
+```
+
+It was tricky to support because previously in RisingWave, we only considered ascending/descending ordering, but not `NULL` s’ ordering. That caused inconsistent `NULL` s ordering around the system. When it comes to SQL query results, the `NULL` values were sometimes the largest, sometimes the smallest.
+
+This also blocked our progress to test RisingWave against other database’s test suites, because in PostgreSQL, `NULL` s are the largest by default when compared against non-NULL values, while in SQLite and DuckDB they are the smallest by default. With inconsistent ordering of `NULL` s and no support for `NULLS { FIRST | LAST }` in order-by clauses, we can neither align with the behavior of one of these databases, nor specify a fixed `NULL` ordering in test queries to align behaviors of all databases.
+
+Recently, we did a thorough refactoring to force all components in our system to use an unified struct type representing ordering, `OrderType` . As a result, this week we were finally able to implement `NULLS { FIRST | LAST }` for order-by clauses at ease, by simply adding a new field, `NullsAre` , to `OrderType` , specifying whether `NULL` s are largest or smallest. By setting `Largest` as default value of `NullsAre` , we achieved the same default ordering behavior as PostgreSQL.
+
+### Rename relations
+
+[feat: support alter rename relations including table/mview/view/sink/index by yezizp2012 · Pull Request #7745](https://github.com/risingwavelabs/risingwave/pull/7745)
+
+As I [mentioned earlier](https://xxchan.github.io/this-week-in-risingwave/2023/02/25/twirw-2.html#table-schema-change), we are working on DDL support ( `ALTER TABLE` ), which is quite tricky. We've already done quite some work for supporting `ADD/DROP COLUMN` . Here's another DDL: renaming relations is supported. This might be slightly easier than `ADD/DROP COLUMN` , but there are still some tricky parts to consider carefully, like updating all related relations all at the same time.
+
+For example, you can use the command `ALTER TABLE t_1 RENAME TO t_2` to rename a table and its related relations will be modified recursively, which you can check with command such as `SHOW CREATE MATERIALIZED VIEW mv_x` . There is no effect on the stored data.
+
+## Performance Optimizations 💪
+
+### Bushy tree join ordering
+
+[feat: Bushy tree join ordering by KveinAxel · Pull Request #8316](https://github.com/risingwavelabs/risingwave/pull/8316#pullrequestreview-1345479333)
+
+RisingWave is a streaming processing system that aims to provide real-time low latency for our users. By reducing the depth of the join tree, we can effectively minimize latency.
+
+See the illustration below:
+
+To reduce the distance that barriers from join inputs need to travel to the join output, we convert a left-deep tree with a height of 3 into a bushy tree with a height of 5.
+
+![https://user-images.githubusercontent.com/9352536/202991793-664ea3f9-3838-4e5f-af6c-e5416140ca40.png](https://user-images.githubusercontent.com/9352536/202991793-664ea3f9-3838-4e5f-af6c-e5416140ca40.png)
+
+![https://user-images.githubusercontent.com/9352536/202991855-998a6d28-a366-4120-8765-be3d5de20474.png](https://user-images.githubusercontent.com/9352536/202991855-998a6d28-a366-4120-8765-be3d5de20474.png)
+
+## Rusty stuff 🦀️
+
+> [We ❤️ Rust!](https://www.risingwave-labs.com/blog/building-a-cloud-database-from-scratch-why-we-moved-from-cpp-to-rust/) This section is about some general Rust related issues.
+
+### zld
+
+[Cannot run risingwave binary on Mac OS M1 (when linked by `zld` ) · Issue #8608](https://github.com/risingwavelabs/risingwave/issues/8608)
+
+[@ahmedriza](https://github.com/ahmedriza) reported that he cannot run the binary on his Macbook M1 due to "symbol not found".
+
+```
+$ ./target/debug/risingwave
+dyld[14116]: symbol not found in flat namespace (__ZN15protobuf_native2io23DeleteCodedOutputStreamEPN6google8protobuf2io17CodedOutputStreamE)
+Abort trap: 6
+```
+
+After some investigation, he found that it's because he used `zld` in his global cargo config, and RisingWave has a repository-level cargo config that uses `lld`. Although it is still not clear whether the error is caused by `zld` or the conflict between the cargo configs, he could solve the problem by just using `lld`.
+
+This is also one of the reasons why I enjoy open source: hackers are very willing to raise issues and even analyze and solve problems themselves. I can also learn a lot from their thoroughly analysis. From this issue, I learned:
+- How [cargo config](https://doc.rust-lang.org/cargo/reference/config.html) (`$HOME/.cargo/config.toml`, and `/projects/.cargo/config.toml`) works in more detail
+- There's another linker `zld`. (But it's already deprecated in favor of `lld` .)
+
+## New Contributors
+
+(Of course, [@ahmedriza](https://github.com/ahmedriza) is also a great new contributor!)
+
+[feat: Add support for array_length function in psql by kamalesh0406 · Pull Request #8636](https://github.com/risingwavelabs/risingwave/pull/8636)
+
+This week we have another first-time contributor [@kamalesh0406](https://github.com/kamalesh0406). He said "This is my first time writing rust code" 😲.
+
+So it seems RisingWave's [good first issue](https://github.com/risingwavelabs/risingwave/issues?q=is%3Aopen+label%3A%22good+first+issue%22+sort%3Aupdated-desc)s are a good way to learn and practice Rust. 😄 Don't hesitate and just join us if you are also interested in the development of an open source database system, or Rust!
+
+---
+
+Finally, welcome to join the RisingWave [Slack community](https://join.slack.com/t/risingwave-community/shared_invite/zt-120rft0mr-d8uGk3d~NZiZAQWPnElOfw).
+
+So much for this week. See you next week! 🤗

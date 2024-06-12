@@ -1,0 +1,117 @@
+---
+date: 2023-03-10
+authors: [xxchan]
+enableComments: true
+---
+
+> This blog series is *my personal comments* about (part of) the development of [RisingWave](https://github.com/risingwavelabs/risingwave).
+>
+> Please take it as an unofficial and no-promise supplement.
+
+## Notable changes 🌟
+
+### Serial type
+
+- [feat(common): Add support for DataType::Serial](https://github.com/risingwavelabs/risingwave/pull/8392)
+- [RFC: add serial type](https://github.com/risingwavelabs/rfcs/pull/45/files)
+- [remove the redundant exchange after append-only source executor](https://github.com/risingwavelabs/risingwave/issues/7621)
+
+As a distributed database system, RisingWave has multiple instances of operators to achieve a high degree of parallelism. Some operators require specific input distribution to ensure the correctness of the result, so data must be shuffled at that point, which is represented by the `Exchange` operator.
+
+At the same time, RisingWave generates hidden `_row_id` columns for sources without primary keys (aka append-only sources), also for the correctness of the system. Previously the `_row_id` is randomly distributed, which leads to the result that we must insert a `HashExchange` later after the source operator to enforce its distribution. 
+  
+Since `_row_id` is fully controlled by us, why don’t we directly generate `_row_id` with desired distribution? So an optimization of using a new internal type `Serial` for `_row_id` with specialized shuffling logic is proposed to remove the unnecessary `Exchange` operators.
+
+### Auto execution mode selection
+
+[feat(batch): support auto execution mode #8274](https://github.com/risingwavelabs/risingwave/pull/8274)
+
+Currently, RisingWave has 2 kinds of execution mode: local and distributed, which can be tuned by `SET query_mode = [local | distributed]` . Lower latency can be achieved by running OLTP queries in local execution mode, and running OLAP queries in distributed execution mode.  
+
+However, previously we leave the choice to users which makes our distributed execution useless to some extent, because most users don't know or understand what those options exactly mean. As a database, we have the ability and should make a good choice for users to reduce their tuning works.
+
+### AWS Private link support
+
+[feat(source): support private link for kafka connector #8247](https://github.com/risingwavelabs/risingwave/pull/8247)
+
+When using a cloud environment, users may face connection issues when attempting to create a source in RisingWave due to their AWS MSK service being located in a different VPC. To solve this, AWS PrivateLink can be used to establish a connection between RisingWave's VPC and the user's VPC. Users can set up an endpoint service to expose their MSK service, allowing RisingWave to easily create an endpoint to access it.
+
+### Sink Validation
+
+[feat(meta): introduce sink validation in meta #8417](https://github.com/risingwavelabs/risingwave/pull/8417)
+
+Recently we already implemented MySQL/Postgres sink support. We are now working hard to keep improving its stability and usability. This PR Introduced validation for sink so that we can catch errors in an earlier phase and give better error messages.
+
+## Reliability Improvements 💪
+
+### Fuzzing Tests
+
+[feat(sqlsmith): Generate more join expressions #8395](https://github.com/risingwavelabs/risingwave/pull/8395)
+
+This week we added more targeted testing for `join` expressions. We increased the number of joins, added generation for `non_equi` joins and added more `equi` join predicates.
+
+The goal of these changes is to increase the coverage of `join` executors in streaming and batch, since the functionality of `JOIN` s are often complex.
+
+### Deterministic Tests 
+
+During the past week, [MadSim](https://github.com/madsim-rs/madsim), our deterministic testing framework, identified more than five issues that we promptly resolved. We are confident in the effectiveness of our framework. Additionally, I'm eagerly anticipating [@wangrunji0408](https://github.com/wangrunji0408)'s upcoming blog post about MadSim internals. 🤩
+
+## Rusty stuff 🦀️
+
+> [We ❤️ Rust!](https://www.risingwave-labs.com/blog/building-a-cloud-database-from-scratch-why-we-moved-from-cpp-to-rust/) This section is about some general Rust related issues.
+
+### Reduce debuginfo size
+
+> Although I already briefly mentioned this in the previous blog, let me elaborate it a little here.
+
+[fix: reduce debuginfo size #8326](https://github.com/risingwavelabs/risingwave/pull/8326)
+
+We noticed unexpected 2GB of memory consumption on Meta node. The cause is quite interesting.
+
+We found the memory consumption happens when meta node writes a log with backtrace included. To get the backtrace, debuginfo in the risingwave binary is loaded (and cached!). This is somewhat reasonable, but should the debuginfo be so large? 
+
+[Why are debug symbols so huge?](https://users.rust-lang.org/t/why-are-debug-symbols-so-huge/81117) is a good post explaining what is debuginfo. Inspired by that, we tuned the level of debuginfo. This is a trade-off between binary size and utility (we still have most useful information for debug). At the same time, we also disabled debuginfo compression. This is another trade-off between binary size and memory overhead.
+
+### Capture unrecognized fields in serde
+
+[https://github.com/risingwavelabs/risingwave/pull/8325](https://github.com/risingwavelabs/risingwave/pull/8325)
+
+By default, serde ignores unknown fields. By `#[serde(deny_unknown_fields)]` , serde rejects unknown fields. But what if you want to tolerate them, but produce a useful warning about it at the same time? Here’s a useful tip: By `#[serde(flatten)]` you can capture the unknown fields:
+
+```rust
+#[derive(Serialize, Deserialize)]
+pub struct S {
+  // ...
+
+  #[serde(flatten)]
+  pub unrecognized: HashMap<String, serde_json::Value>,
+}
+```
+
+### Auto derive a prefixed alias for protobuf message types
+
+[refactor(proto): auto derive a Pb-prefixed alias for proto message types by BugenZhao · Pull Request #8426 · risingwavelabs/risingwave](https://github.com/risingwavelabs/risingwave/pull/8426)
+
+When using protobuf for communication, one thing might be defined multiple times in different places for different purposes. e.g., if we have a protobuf message `Msg` , a crate using `Msg` might have it’s own type for `Msg` at the same time, which might include useful methods and maybe a different data structure representation with the protobuf one. Previously, we need to manually alias it to avoid conflict. e.g., 
+
+```rust
+use pb_crate::Msg as PbMsg;
+
+struct Msg {
+  // ...
+}
+
+impl Msg {
+  pub fn to_proto(self) -> PbMsg {
+     // ...
+  }
+}
+```
+
+Now we came up with a method to mitigate this problem. Thanks to `prost` ’s ability to customize generated code for protobuf messages, we can add type alias `pub type PbMsg = Msg` at the same time of defining `Msg` . In this way, when trying to type `PbMsg` , the IDE will be able to find the type and automatically import it.
+
+---
+
+Finally, welcome to join the RisingWave [Slack community](https://join.slack.com/t/risingwave-community/shared_invite/zt-120rft0mr-d8uGk3d~NZiZAQWPnElOfw). Also check out the [good first issue](https://github.com/risingwavelabs/risingwave/issues?q=is%3Aopen+label%3A%22good+first+issue%22+sort%3Aupdated-desc) and [help wanted](https://github.com/risingwavelabs/risingwave/issues?q=is%3Aopen+sort%3Aupdated-desc+label%3A%22help+wanted%22) issues if you want to join the development of an open source database system!
+
+So much for this week. See you next week (hopefully)! 🤗

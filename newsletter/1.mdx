@@ -1,0 +1,131 @@
+---
+date: 2023-02-17
+authors: [xxchan]
+enableComments: true
+---
+
+[RisingWave](https://github.com/risingwavelabs/risingwave) is a distributed SQL database for stream processing written in Rust. As a developer of RisingWave, I'm always excited (and also a little bit overwhelmed) about its progress every day. 
+
+So why not share the excitement with more people (and also help myself to get a better understanding)? That's why I decided to write this blog post about what's happening in the project. Hope you will enjoy it!
+
+> This blog series is *my personal comments* about (part of) the development of [RisingWave](https://github.com/risingwavelabs/risingwave).
+>
+> Please take it as an unofficial and no-promise supplement.
+
+## Most exciting things 🤩
+
+### Huge reduce of CI time
+
+As my last post mentioned, last week I found some [stupidly effective ways to optimize Rust compile time]({% post_url 2023-02-17-optimize-rust-comptime-en %}). I managed to reduce the CI time from **main 40min/PR 25min30s** to **main 28min/PR 16-19min**, and it looks good this week!
+
+It's quite a DX improvement. I'm very happy and would like to quote matklad's [blog](https://matklad.github.io/2021/09/04/fast-rust-builds.html) again:
+
+> Compilation time is a *multiplier* for basically everything. Whether you want to ship more features, to make code faster, to adapt to a change of requirements, or to attract new contributors, build time is a factor in that.
+>
+> It also is a non-linear factor. Just waiting for the compiler is the smaller problem. The big one is losing the state of the flow or (worse) mental context switch to do something else while the code is compiling. One minute of work for the compiler wastes more than one minute of work for the human.
+
+Let's take some time to prevent "*broken windows*". The effort would pay off!
+
+### DDL UX improvements
+
+DDL can take very long time if there are already a lot of existing data to consume. Previously you can only sit there and wait. But now, you can:
+
+- Show DDL's progress: ([by chenzl25 #7914](https://github.com/risingwavelabs/risingwave/pull/7914))
+
+```sql
+dev=> select * from rw_catalog.rw_ddl_progress;
+  ddl_id |         ddl_statement         | progress
+--------+-------------------------------+----------
+    1026 | CREATE INDEX idx ON sbtest1(c) | 69.02%
+(1 row)
+```
+
+- and cancel streaming jobs by ctrl-c! ([by yezizp2012 #7917](https://github.com/risingwavelabs/risingwave/pull/7917))
+
+## Most intersting things 😄
+
+### OpenDAL into RisingWave!
+
+[OpenDAL](https://github.com/datafuselabs/opendal) is a unified data access layer which aims to help access data freely, painlessly, and efficiently.
+
+Previously, RisingWave only supports s3 as a storage backend (and also support other s3-compatible storage). Recently we are trying to add more storage backends.
+
+Last week, we used OpenDAL to add support for using HDFS as a storage backend. This week, we tried more things:
+
+- Tried using google cloud storage in RisingWave ([by wcy-fdu #7920](https://github.com/risingwavelabs/risingwave/issues/7920)). In our initial benchmark, it seems OpenDAL can be faster than s3-compatible protocol!
+- Changed the implementation for oss from s3-compatible mode to OpenDAL ([by wcy-fdu #7969](https://github.com/risingwavelabs/risingwave/pull/7969)). S3-compatible mode for oss doesn't support `delete_objects`, and also suffers from some unstable issues.
+
+It seems that OpenDAL is quite promising!
+
+## Rusty stuff 🦀️ 
+
+> [We ❤️ Rust!](https://www.risingwave-labs.com/blog/building-a-cloud-database-from-scratch-why-we-moved-from-cpp-to-rust/) This section is about some general Rust related issues.
+
+### [ `clippy::or_fun_call` ](https://rust-lang.github.io/rust-clippy/master/#or_fun_call)
+
+Compared with `or` , The `or_else` methods on `Option` and `Result` can help to avoid expensive computation in the `None` or `Err` case. (i.e., lazy evaluation!) And the [ `clippy::or_fun_call` ](https://rust-lang.github.io/rust-clippy/master/#or_fun_call) lint is for detecting that. It used to be `warn` by default, but unfortunately it seems to have a high false positive rate, and is now `allow` by default.
+
+But we met a case where it's very wanted. In a function, we used `ok_or::<RwError>` 9 times, so 9 `RwError` is created regardless of whether it's needed. But constructing `RwError` is very expensive because it captures the backtrace... 
+
+What's worse, on M1 Mac, capturing backtrace is *VERY SLOW* (~300ms [#6131](https://github.com/risingwavelabs/risingwave/issues/6131)) and can even cause *SEGFAULT* ([#6205](https://github.com/risingwavelabs/risingwave/issues/6205))! 😇 It's not completely resolved yet. We mitigated it by reducing unncessary backtrace capturing, but it's still a problem.
+
+So for this issue, of course we should use `ok_or_else` instead ([by xxchan #7945](https://github.com/risingwavelabs/risingwave/pull/7945)).
+
+### [`zip_eq`](https://docs.rs/itertools/latest/itertools/fn.zip_eq.html) & [ `ExactSizeIterator` ](https://doc.rust-lang.org/std/iter/trait.ExactSizeIterator.html)
+
+[`zip_eq`](https://docs.rs/itertools/latest/itertools/fn.zip_eq.html) is a *safer* version of `zip` which checks if the two iterators have the same length. However, it's notoriously slow (see [#6856 by wangrunji0408](https://github.com/risingwavelabs/risingwave/pull/6856) for a benchmark), because in the naive implementation, every item in the iterator is checked. 
+
+There's a [ `ExactSizeIterator` ](https://doc.rust-lang.org/std/iter/trait.ExactSizeIterator.html) trait and naturally it can have an optimized implementation. Such speciallized implementation does not exist because Rust doesn't support specialization yet. (See [tracking issue for specialization (RFC 1210)](https://github.com/rust-lang/rust/issues/31844))
+
+So last week I added two new separated traits to replace `zip_eq` : ([code here](https://github.com/risingwavelabs/risingwave/blob/d8198fa138003e1f1431053f4f5f09e4a5fa8fd8/src/common/src/util/iter_util.rs))
+- `zip_eq_debug`: uses `zip_eq` when `debug_assertions` is enabled, otherwise use `zip`. It's a good trade-off between safety and performance, and can be a drop-in replacement for `zip_eq`.
+- `zip_eq_fast`: speciallized implementation for `ExactSizeIterator`. (Actually `zip_eq_debug` can be good enough, but I still added this after playing with specialization for a while. Just for fun...!😄)
+
+This week, `ExactSizeIterator` are implemented for more our iterator implementations, so we can use `zip_eq_fast` more often... ([by BugenZhao #7939](https://github.com/risingwavelabs/risingwave/pull/7939))
+
+## Other notable things
+
+### System Parameters
+
+Recently we are doing a large refactoring for system parameters in order to achive consistency and mutability for the cluster configurations ([Tracking Issue #7381](https://github.com/risingwavelabs/risingwave/issues/7381)). This is a serious issue as RisingWave grows mature.
+
+This week, the meta part for `ALTER SYTEM` is implemented [by Gun9niR #7954](https://github.com/risingwavelabs/risingwave/pull/7954).
+
+### `pg_catalog`
+
+Since RisingWave is PostgreSQL compatible, I had thought that supporting other database tools would be easy. But it turns out to be very hard 😭. The largest obstacles is that database tools ususally rely heavily on the system tables in `pg_catalog` to get the metadata of the database so that they can provide a better UX. But there are so many features in the system tables!
+
+We have been constantly making efforts to support more and more system tables in order to integrate RisingWave into other tools. This week, we:
+
+- Added `pg_catalog.pg_conversion` [by yezizp2012 #7964](https://github.com/risingwavelabs/risingwave/pull/7964). This is for DBeaver support.
+- Found it's not possible to add `typarray` column in `pg_catalog.pg_type` [#7555](https://github.com/risingwavelabs/risingwave/issues/7555), which affects sqlalchemy support. But [sqlalchemy-risingwave](https://github.com/risingwavelabs/sqlalchemy-risingwave) can be used as a substitute for the PG native plugin.
+
+### `EXPLAIN` format
+
+`EXPLAIN` format is another thing I had thought would be easy. Although current situation is not so bad, it's still far from perfect.
+
+This week, we tried to use a "global expression id" to make the plan more readable, but it still has some problems:
+- [feat: try to improve explain result by fuyufjh #7953](https://github.com/risingwavelabs/risingwave/pull/7953)  
+- [New project explain format makes planner test unstable #8005](https://github.com/risingwavelabs/risingwave/issues/8005)
+- [refactor(optimizer): reset expression display id for explain by chenzl25 #8006](https://github.com/risingwavelabs/risingwave/pull/8006)  
+
+By the way, here's another intersting stuff: rewrite the `EXPLAIN` implementation using the (modified) Wadler-style algebraic pretty printer! See the [RFC by ice1000](https://github.com/risingwavelabs/rfcs/pull/42)
+
+### Query optimizer
+
+Although OLAP batch queries are not the main focus of RisingWave, we still want to make it better. This week, we have these optimizer improvements to make batch queries faster:
+
+- [feat(optimizer): index accelerating `TopN` by Eurekaaw #7726](https://github.com/risingwavelabs/risingwave/pull/7726)
+- [feat(optimizer): support like expression rewrite by chenzl25 #7982](https://github.com/risingwavelabs/risingwave/pull/7982)
+
+We are also trying to add constant relation in streaming ([#7854](https://github.com/risingwavelabs/risingwave/issues/7854)). As a first step, we are doing "plan-level constant folding", e.g., merge `Union` with `Values` inputs into `Values` [by jon-chuang #7923](https://github.com/risingwavelabs/risingwave/pull/7923)
+
+## Last but not least
+
+- [fix: fix idle exit in playground mode of compactor by yezizp2012 #8014](https://github.com/risingwavelabs/risingwave/pull/8014). During an HTTP server's graceful shutdown (`serve_with_shutdown`), it will wait for all the connections to be closed. We ran into a situation where some connections were not closed and the server waits forever...
+- [Tracking: Monitoring, logging and tooling improvements #8018](https://github.com/risingwavelabs/risingwave/issues/8018). Observability matters!
+- [Support error line/column number reporting during parsing #7863](https://github.com/risingwavelabs/risingwave/issues/7863). This is a lovely feature to increase UX, but it will require hard work :)
+
+By the way, welcome to join the RisingWave [Slack community](https://join.slack.com/t/risingwave-community/shared_invite/zt-120rft0mr-d8uGk3d~NZiZAQWPnElOfw). Also check out the [good first issue](https://github.com/risingwavelabs/risingwave/issues?q=is%3Aopen+label%3A%22good+first+issue%22+sort%3Aupdated-desc) and [help wanted](https://github.com/risingwavelabs/risingwave/issues?q=is%3Aopen+sort%3Aupdated-desc+label%3A%22help+wanted%22) issues if you want to join the development of an open source database system!
+
+So much for this week. See you next week (hopefully)! 🤗

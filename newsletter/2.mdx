@@ -1,0 +1,206 @@
+---
+date: 2023-02-25
+authors: [xxchan]
+enableComments: true
+---
+
+> See [#1]({% post_url 2023-02-17-twirw-1 %}) for an introduction of this series.
+
+> This blog series is *my personal comments* about (part of) the development of [RisingWave](https://github.com/risingwavelabs/risingwave).
+>
+> Please take it as an unofficial and no-promise supplement.
+
+## Most exciting things 🤩
+
+### Common sub-plan sharing
+
+We decided to refactor tree-structured plan node into a DAG some time ago (See [RFC #28](https://github.com/risingwavelabs/rfcs/pull/28)). The largest benefit is to enable common sub-plan sharing.
+
+Previously we already implemented `LogicalShare` , which represents the plan node that will be shared, and used it to share source/subquery/CTE/view. Now comes the last piece of the puzzle: common sub-plan sharing.
+
+- [feat(optimizer): Common sub-plan detection. by wsx-ucb #7865](https://github.com/risingwavelabs/risingwave/pull/7865)
+- [chore(streaming): rewrite nexmark q5 to benefit from common sub-plan sharing by chenzl25 #8159](https://github.com/risingwavelabs/risingwave/pull/8159)
+
+### Python UDF
+
+Unlike Flink, RisingWave's uses SQL as the main interface, to make it easier for users to use. But sometimes users do want some custom logic... We are doing some interesting experiments on this topic, and this is a little milestone. Basically you can already play with Python UDF now!
+
+[feat(udf): minimal Python UDF SDK by wangrunji0408 #7943](https://github.com/risingwavelabs/risingwave/pull/7943)
+
+## Other notable things
+
+### Telemetry
+
+Telemetry can greatly help us understand and improve how the system behaves in real-world scenarios!
+
+- [feat: telemetry by odysa #7384](https://github.com/risingwavelabs/risingwave/pull/7384)
+- [RisingWave Telemetry Design by odysa #53](https://github.com/risingwavelabs/rfcs/pull/53)
+
+### Replace Bloom filter with XOR filter
+
+- [perf(bloom filter): replace bloom filter with xor filter by soundOfDestiny #8081](https://github.com/risingwavelabs/risingwave/pull/8081)
+- We are also [investigating Ribbon filter · Issue #7406](https://github.com/risingwavelabs/risingwave/issues/7406)
+
+### Stream error reporting
+
+RisingWave tolerates compute errors by default (see [#4625](https://github.com/risingwavelabs/risingwave/issues/4625)), but previously errors are only shown in the log. Now we are trying to report the errors to users ([See #7824](https://github.com/risingwavelabs/risingwave/issues/7824)).
+
+- [feat(stream): Report `compute_error_count` to prometheus by jon-chuang #7832](https://github.com/risingwavelabs/risingwave/pull/7832)
+- [feat(stream): `source_error_count` reporting to prometheus by jon-chuang #7877](https://github.com/risingwavelabs/risingwave/pull/7877)
+- [feat(stream): `ErrorSuppressor` for user compute errors by jon-chuang #8132](https://github.com/risingwavelabs/risingwave/pull/8132)
+- [test(stream): Test reporting of stream errors in e2e setting · Issue #8037](https://github.com/risingwavelabs/risingwave/issues/8037)
+
+### Table schema change
+
+`ALTER TABLE` is quite tricky for streaming... `ADD COLOMN` is somewhat reasonable, and we are working on it as the first step.
+
+- [feat(streaming): support output indices in dispatchers by BugenZhao #8094](https://github.com/risingwavelabs/risingwave/pull/8094): This ensures existing downstream MV to receive old output columns and new downstream MV receive all columns. It also enables a perf optimization for MV on MV.
+- [feat: adding column of table schema change by BugenZhao #8063](https://github.com/risingwavelabs/risingwave/pull/8063)
+
+## New major SQL features
+
+### `jsonb` data type
+
+> The `json` data type stores an exact copy of the input text, which processing functions must reparse on each execution; while `jsonb` data is stored in a decomposed binary format that makes it slightly slower to input due to added conversion overhead, but significantly faster to process, since no reparsing is needed. `jsonb` also supports indexing, which can be a significant advantage.
+>
+> [https://www.postgresql.org/docs/current/datatype-json.html](https://www.postgresql.org/docs/current/datatype-json.html)
+
+- [feat(sqlparser): support jsonb operator `->` and `->>` by xiangjinwu #8144](https://github.com/risingwavelabs/risingwave/pull/8144)
+- [Tracking: jsonb operations · Issue #7714](https://github.com/risingwavelabs/risingwave/issues/7714)
+
+### New array function: `array_to_string`
+
+[feat(expr): support `array_to_string` by fuyufjh #8027](https://github.com/risingwavelabs/risingwave/pull/8027)
+
+```sql
+postgres=> select array_to_string(array[1, 2, 3, NULL, 5], ',');
+ array_to_string 
+-----------------
+ 1,2,3,5
+(1 row)
+
+postgres=> select array_to_string(array[1, 2, 3, NULL, 5], ',', '*');
+ array_to_string 
+-----------------
+ 1,2,3,*,5
+(1 row)
+```
+
+It's also called `array_join` in some other systems, and we added that alias as well.
+
+### New aggregate function: `stddev` / `stdvar`
+
+[feat: implement stddev/var function by shanicky #7952](https://github.com/risingwavelabs/risingwave/pull/7952)
+
+## Mind-blowing SQL surprise 🤯
+
+I don't know that much about SQL before I becoming a database developer. Every now and then I got some new surprise from SQL...
+
+### Operator `|/`
+
+[fix(sqlparser): align operator precedence with PostgreSQL by xiangjinwu #8174](https://github.com/risingwavelabs/risingwave/pull/8174/files)
+
+Do you know Postgres has a square root operator `|/` ...? The operator precedence might also surprise you.
+
+```sql
+postgres=> select |/4;
+ ?column? 
+----------
+        2
+(1 row)
+
+postgres=> select |/4+12;
+ ?column? 
+----------
+        4
+(1 row)
+```
+
+### `NULL` s hurt our head -- FULL OUTER JOIN in steraming
+
+[Should we ban full outer join for streaming query? · Issue #8084](https://github.com/risingwavelabs/risingwave/issues/8084)
+
+```sql
+create table t (a int primary key);
+insert into t values(null);
+create materialized view v as select t1.* from t as t1 full join t as t2 on t1.a = t2.a;
+```
+
+Then `v` will have primary key `(t1.a, t2.a)` , but ...
+
+```
+left  side: +[null] --> Full Join -> +[null, null]
+right side: +[null] --> Full Join -> +[null, null]
+```
+
+## Rusty stuff 🦀️ 
+
+> [We ❤️ Rust!](https://www.risingwave-labs.com/blog/building-a-cloud-database-from-scratch-why-we-moved-from-cpp-to-rust/) This section is about some general Rust related issues.
+
+### Error handling 
+
+[Is appropriate return a Enum Type Error? · Issue #8074](https://github.com/risingwavelabs/risingwave/issues/8074)
+
+Error handling is quite a topic in Rust (or any language). We ran into this discussion again.
+
+### `ChaChaRng`
+
+[feat(sqlsmith): use `ChaChaRng` for determinism by kwannoel #8068](https://github.com/risingwavelabs/risingwave/pull/8068): Use a reproducible rng so that deterministic fuzz test results can be (more) reproduceable.
+
+### Private marker trait
+
+[refactor(meta): list all implementors of MetadataModel by zwang28 #8122](https://github.com/risingwavelabs/risingwave/pull/8122)
+
+Just show you the code! 😲
+
+```rust
+mod private {
+    /// A marker trait helps to collect all implementors of `MetadataModel` in
+    /// `for_all_metadata_models`. The trait should only be implemented by adding item in
+    /// `for_all_metadata_models`.
+    pub trait MetadataModelMarker {}
+}
+
+pub trait MetadataModel: std::fmt::Debug + Sized + private::MetadataModelMarker {
+    // ...
+}
+
+macro_rules! for_all_metadata_models {
+    ($macro:ident) => {
+        $macro! {
+            // These items should be included in a meta snapshot.
+            // So be sure to update meta backup/restore when adding new items.
+            { risingwave_pb::hummock::HummockVersion },
+            // ...
+        }
+    };
+}
+
+macro_rules! impl_metadata_model_marker {
+    ($({ $target_type:ty },)*) => {
+        $(
+            impl private::MetadataModelMarker for $target_type {}
+        )*
+    }
+}
+
+for_all_metadata_models!(impl_metadata_model_marker);
+```
+
+## New Contributors
+
+As I mentioned last time, RisingWave is an open source project, and new contributors are always welcome. So happy to see we do have some new contributors this week:
+
+- [fix(executor): exit early when limit = 0 by Dousir9 #8013](https://github.com/risingwavelabs/risingwave/pull/8013)
+- [fix(parser): disallow empty object names by broccoliSpicy #8171](https://github.com/risingwavelabs/risingwave/pull/8171)
+- [fix(sqlparser): disallow JOIN without CROSS/ON/USING by sun-jacobi #7693](https://github.com/risingwavelabs/risingwave/pull/7693)
+
+Check out the [good first issue](https://github.com/risingwavelabs/risingwave/issues?q=is%3Aopen+label%3A%22good+first+issue%22+sort%3Aupdated-desc) and [help wanted](https://github.com/risingwavelabs/risingwave/issues?q=is%3Aopen+sort%3Aupdated-desc+label%3A%22help+wanted%22) issues if you also want to join force! (They are usually carefully chosen. Not just random chore work. It's a good way to get started!)
+
+---
+
+P.S. Welcome to join the RisingWave [Slack community](https://join.slack.com/t/risingwave-community/shared_invite/zt-120rft0mr-d8uGk3d~NZiZAQWPnElOfw).
+
+So much for this week. (I also havn't fully learned the details of many of them yet...) See you next week (hopefully)! 🤗 
+
+P.P.S I'm also considering deep diving into one or few interesting things every week, instead of writing a weekly summary like this. What do you think? 🤔

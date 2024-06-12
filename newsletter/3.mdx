@@ -1,0 +1,114 @@
+---
+date: 2023-03-04
+authors: [xxchan]
+enableComments: true
+---
+
+> This blog series is *my personal comments* about (part of) the development of [RisingWave](https://github.com/risingwavelabs/risingwave).
+>
+> Please take it as an unofficial and no-promise supplement.
+
+
+## Notable changes
+
+### Memory control policy
+
+- [feat(memory): introduce memory control policy for computing tasks by xx01cyx #7767](https://github.com/risingwavelabs/risingwave/pull/7767)
+- [Tracking: refactor user-configurable memory control policy #8228](https://github.com/risingwavelabs/risingwave/issues/8228)
+- [refactor: introduce memory control policy abstraction by xx01cyx #8253](https://github.com/risingwavelabs/risingwave/pull/8253)
+
+Recently we have implemented memory control mechanism, and now we are introducing the policy. Since RisingWave is a "streaming database", it is crucial for us to consider both batch and streaming tasks while balancing the usage of memory between them.
+
+### Move memtable
+
+[feat(storage): move memtable down to local state store by wenym1 #7183](https://github.com/risingwavelabs/risingwave/pull/7183)
+
+Our streaming executors access storage via `StateTable` interface, and storage layer exposes `LocalStateStore` interface. This PR wants to move part of the former (memtable) to the latter. It might help to implement more features in the storage layer, and also make it easier to implement other storage engines for bench purpose.
+
+### Optimizer updates
+
+- [refactor(optimizer): divide logical optimizer into one for batch and one for streaming. by chenzl25 #8192](https://github.com/risingwavelabs/risingwave/pull/8192)
+- [perf(agg): reuse existing agg calls while building `LogicalAgg` by richardchien #8200](https://github.com/risingwavelabs/risingwave/pull/8200)
+
+---
+
+[feat: Bushy tree join ordering by KveinAxel #8316](https://github.com/risingwavelabs/risingwave/pull/8316)
+
+RisingWave is a streaming processing system which aims to provide real time low latency for our users. Making the join tree shallower helps to reduce the latency.
+
+See the illustration below:
+
+![Left Deep Tree](https://user-images.githubusercontent.com/9352536/202991793-664ea3f9-3838-4e5f-af6c-e5416140ca40.png)
+
+![Bushy Tree](https://user-images.githubusercontent.com/9352536/202991855-998a6d28-a366-4120-8765-be3d5de20474.png)
+
+
+### Async expr
+
+[refactor(expr): make evaluation async by wangrunji0408 #8229](https://github.com/risingwavelabs/risingwave/pull/8229)
+
+... to prevent blocking when evaluting UDFs
+
+### RFC: suspend MV
+
+[RFC: Suspend MV on Non-Recoverable Errors by hzxa21 #54](https://github.com/risingwavelabs/rfcs/pull/54)
+
+Last time, I mentioned that RisingWave currently tolerates compute errors by default and we are in the process of implementing an error reporting mechanism. However, we had previously discussed another mechanism for handling errors which involved suspending MV. This RFC reintroduces this idea.
+
+## Intersting Bug
+
+### Injectivity of column index mapping
+
+[bug: mv with join and duplicate output columns has row indices hidden #8216](https://github.com/risingwavelabs/risingwave/issues/8216)
+
+`ColIndexMapping` is an important utility in optimizer used when we wants to map an input column (index) to an output column. It's a partial mapping from `[0, n)` to `[0, m)` , where `n` is the number of columns in the input, and `m` is the number of columns in the output.
+
+When I began to work on RisingWave (one year ago 😲), I worked on column pruning, which removes unnecessary columns from the plan nodes. Naturally it involves a lot with `ColIndexMapping` . Althought mathematically simple and intuitive, it's not easy to do such mappings correctly in programs. I had a hard time understanding `ColIndexMapping` at that time, and added many comments and did some refactor to make it less confusing and error-prone.
+
+After long, we met this new bug related to `ColIndexMapping` again.. Under curtain circumstances, a plan node will have a non-injective mapping and duplicate columns in the output. In this case, the duplicate columns are unexpectedly hidden after mapping. We fixed this bug by considering the injectivity of the mapping. A more systematic solution is also proposed: [Proposal (frontend): Prune duplicate columns #8277](https://github.com/risingwavelabs/risingwave/issues/8277).
+
+## Rusty stuff 🦀️
+
+> [We ❤️ Rust!](https://www.risingwave-labs.com/blog/building-a-cloud-database-from-scratch-why-we-moved-from-cpp-to-rust/) This section is about some general Rust related issues.
+
+### Publish `await-tree`
+
+- [refactor: switch `async_stack_trace` to the crates.io version of `await-tree` by BugenZhao #8254](https://github.com/risingwavelabs/risingwave/pull/8254)
+- [await-tree - crates.io: Rust Package Registry](https://crates.io/crates/await-tree)
+
+We have a tracing mechanism called *async stack trace* in our system, which allows us to “capture a snapshot” of where, why, and how long the async tasks are pending in real-time. It helped us locate some stuck issues, e.g., streaming deadlock, which would be very hard to debug in other ways.
+
+Now we have published it to crates.io, and renamed it to `await-tree` . I already invited [@BugenZhao](https://github.com/bugenzhao) to write a blog post to introduce it, and can't wait to see it. 😍
+
+[feat(dashboard): dump await-tree of compute nodes by BugenZhao #8330](https://github.com/risingwavelabs/risingwave/pull/8330)
+
+We also integrated it into the RisingWave dashboard to make it more convenient to use. 😋
+
+### Large memory usage by backtrace and debuginfo
+
+[fix: reduce debuginfo size by fuyufjh #8326](https://github.com/risingwavelabs/risingwave/pull/8326)
+
+We noticed unexpected memory consumption on Meta node. And the cause is (again) backtrace...
+
+## New contributor
+
+So happy to see another 3 first-time contributors this week! 😲🥳
+
+(BTW, I'm also quite interested in where they come from. Are they encouraged by my posts? If so, please let me know! 🤔🤣)
+
+- [feat(expr): support `array_distinct` by snipekill #8315](https://github.com/risingwavelabs/risingwave/pull/8315)
+- [fix(parser): disable single-quoted strings as aliases for column or table by Eridanus117 #8338](https://github.com/risingwavelabs/risingwave/pull/8338)
+
+[@erichgess](https://github.com/erichgess) submitted 2 PRs. I'm quite impressed by the thoroughness of their communication in issue and PR discussions regarding the problem's situation, cause, and solution. This is one of the biggest reasons why I love open source or working in public; transparent over-communication benefits both current collaborators' reviews and future contributors' learning. 🤗
+- [fix(`exp` PG compatibility): if a very large or very small operand is used, then `exp` errors by erichgess #8309](https://github.com/risingwavelabs/risingwave/pull/8309)
+- [bug(unit tests): Cache unit tests fail when `/tmp` is a `tmpfs` drive #8278](https://github.com/risingwavelabs/risingwave/issues/8278)
+
+---
+
+Check out the [good first issue](https://github.com/risingwavelabs/risingwave/issues?q=is%3Aopen+label%3A%22good+first+issue%22+sort%3Aupdated-desc) and [help wanted](https://github.com/risingwavelabs/risingwave/issues?q=is%3Aopen+sort%3Aupdated-desc+label%3A%22help+wanted%22) issues if you also want to join force! (They are usually carefully chosen. Not just random chore work. It's a good way to get started!)
+
+---
+
+P.S. Welcome to join the RisingWave [Slack community](https://join.slack.com/t/risingwave-community/shared_invite/zt-120rft0mr-d8uGk3d~NZiZAQWPnElOfw).
+
+So much for this week. See you next week (hopefully)!
